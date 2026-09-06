@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+.agents/
+icons/.cache/
+carousel.pdf
+mock_shots/

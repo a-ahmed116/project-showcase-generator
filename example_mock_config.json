@@ -1,0 +1,104 @@
+{
+  "output": "carousel.pdf",
+  "rtl": true,
+  "bg": "#F7F5F0",
+  "title_color": "#11692B",
+  "text_color": "#14221A",
+  "save_pngs": false,
+  "slides": [
+    {
+      "type": "screens",
+      "title": "الشاشة الرئيسية",
+      "subtitle": "نظرة سريعة على العروض، وأسرع طريق لتصفح السيارات.",
+      "screenshots": [
+        "mock_shots/home.png"
+      ]
+    },
+    {
+      "type": "screens",
+      "title": "قائمة السيارات",
+      "subtitle": "بحث سريع عن السيارة المناسبة، ومقارنة بين أكثر من سيارة قبل القرار.",
+      "screenshots": [
+        "mock_shots/list.png"
+      ]
+    },
+    {
+      "type": "screens",
+      "title": "تفاصيل السيارة والتقييم",
+      "subtitle": "كل تفاصيل السيارة في مكان واحد، مع إمكانية ترك تقييم بعد التجربة.",
+      "screenshots": [
+        "mock_shots/detail.png",
+        {
+          "path": "mock_shots/review.png",
+          "crop": [
+            1140,
+            2340
+          ]
+        }
+      ]
+    },
+    {
+      "type": "screens",
+      "title": "مقارنة السيارات",
+      "subtitle": "مقارنة مباشرة بين سيارتين لمعرفة الأفضل سعراً وموديلاً.",
+      "screenshots": [
+        "mock_shots/compare.png"
+      ]
+    },
+    {
+      "type": "screens",
+      "title": "المفضلة والإشعارات",
+      "subtitle": "حفظ السيارات المفضلة، وتنبيه فوري عند اقتراب موعد القسط.",
+      "screenshots": [
+        "mock_shots/fav.png",
+        "mock_shots/notif.png"
+      ]
+    },
+    {
+      "type": "screens",
+      "title": "طلب التمويل",
+      "subtitle": "طلب تمويل بثلاث طرق دفع، مع معرفة القسط الشهري فوراً.",
+      "screenshots": [
+        "mock_shots/finance.png"
+      ]
+    },
+    {
+      "type": "screens",
+      "title": "تفاصيل الشراء والجدول",
+      "subtitle": "متابعة تفاصيل الشراء وجدول الأقساط أولاً بأول.",
+      "screenshots": [
+        "mock_shots/purchase.png",
+        "mock_shots/schedule.png"
+      ]
+    },
+    {
+      "type": "screens",
+      "title": "سجل المعاملات",
+      "subtitle": "سجل كامل لكل عملية دفع تمت سابقاً.",
+      "screenshots": [
+        "mock_shots/tx.png"
+      ]
+    },
+    {
+      "type": "screens",
+      "title": "الحساب",
+      "subtitle": "التحكم في الحساب واللغة، والتواصل مع الدعم.",
+      "screenshots": [
+        "mock_shots/profile.png"
+      ]
+    },
+    {
+      "type": "stack",
+      "title": "التقنيات المستخدمة",
+      "items": [
+        "flutter",
+        "supabase",
+        {
+          "icon": "firebase",
+          "label": "Firebase Messaging"
+        }
+      ]
+    }
+  ],
+  "rhythm": true
+}
