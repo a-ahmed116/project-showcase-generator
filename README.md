@@ -25,7 +25,7 @@ Paths inside the config (screenshots, icon files) are resolved relative to the c
 
 ## Config format
 
-A config is a JSON file with top-level defaults and a list of slides. See [`example_mock_config.json`](example_mock_config.json) for a full real-world example (Arabic/RTL car-financing app).
+A config is a JSON file with top-level defaults and a list of slides. See [`examples/example_mock_config.json`](examples/example_mock_config.json) for a full real-world example (Arabic/RTL car-financing app).
 
 ```json
 {
@@ -96,6 +96,5 @@ build_carousel.py    CLI entry point, config parsing, layout engine, PDF output
 slides.py            Slide-type rendering helpers (imported by build_carousel.py)
 fonts/               Bundled Noto Kufi Arabic fonts
 icons/               Cached tech-stack brand icons (.cache/)
-mock_shots/          Sample screenshots used by example_mock_config.json
-example_mock_config.json   Full example config
+examples/            Mock configs + their sample screenshots
 ```

@@ -1,0 +1,57 @@
+{
+  "output": "web_carousel.pdf",
+  "rtl": false,
+  "bg": "#F5F6FA",
+  "title_color": "#1E1B4B",
+  "text_color": "#3F3F55",
+  "save_pngs": false,
+  "slides": [
+    {
+      "type": "cover",
+      "eyebrow": "PRODUCT SHOWCASE",
+      "title": "Pulseboard",
+      "subtitle": "A mock analytics web app — built to demo layout, flows, and visual polish.",
+      "align": "center"
+    },
+    {
+      "type": "browser",
+      "title": "Landing page",
+      "subtitle": "Clear value prop up top, product preview right below the fold.",
+      "url": "pulseboard.io",
+      "screenshots": ["mock_web_shots/landing.png"]
+    },
+    {
+      "type": "browser",
+      "title": "Overview dashboard",
+      "subtitle": "Key metrics, growth trend, and channel breakdown at a glance.",
+      "url": "app.pulseboard.io/overview",
+      "screenshots": ["mock_web_shots/dashboard.png"]
+    },
+    {
+      "type": "browser",
+      "title": "Signup funnel",
+      "subtitle": "Step-by-step conversion with the biggest drop-off called out.",
+      "url": "app.pulseboard.io/funnels",
+      "screenshots": ["mock_web_shots/funnel.png"]
+    },
+    {
+      "type": "browser",
+      "title": "Pricing",
+      "subtitle": "Three tiers, one clearly recommended, no hidden fees.",
+      "url": "pulseboard.io/pricing",
+      "screenshots": ["mock_web_shots/pricing.png"]
+    },
+    {
+      "type": "browser",
+      "title": "Social proof",
+      "subtitle": "Usage stats and testimonials to build trust before signup.",
+      "url": "pulseboard.io/customers",
+      "screenshots": ["mock_web_shots/testimonials.png"]
+    },
+    {
+      "type": "stack",
+      "title": "Built with",
+      "items": ["react", "nestjs", "supabase", "firebase"]
+    }
+  ]
+}
