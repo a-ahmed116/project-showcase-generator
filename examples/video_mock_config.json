@@ -1,0 +1,42 @@
+{
+  "output": "showcase.mp4",
+  "rtl": true,
+  "bg": "#F7F5F0",
+  "title_color": "#11692B",
+  "text_color": "#14221A",
+  "video": {
+    "fps": 30,
+    "transition": "crossfade",
+    "transition_duration": 0.5,
+    "entrance_duration": 0.6
+  },
+  "slides": [
+    {
+      "type": "cover",
+      "title": "تطبيق تمويل السيارات",
+      "subtitle": "من التصفح إلى التمويل، في تجربة واحدة سلسة.",
+      "duration": 2.5
+    },
+    {
+      "type": "screens",
+      "title": "تفاصيل السيارة",
+      "subtitle": "كل التفاصيل، من الصور إلى التقييمات، في صفحة واحدة طويلة.",
+      "screenshots": ["mock_shots/long_detail.png"],
+      "layout": "row"
+    },
+    {
+      "type": "screens",
+      "title": "قائمة السيارات",
+      "subtitle": "بحث سريع ومقارنة سهلة بين السيارات.",
+      "screenshots": ["mock_shots/list.png"],
+      "layout": "split",
+      "frame_side": "right"
+    },
+    {
+      "type": "stack",
+      "title": "التقنيات المستخدمة",
+      "items": ["flutter", "supabase", "firebase"],
+      "duration": 2.5
+    }
+  ]
+}
