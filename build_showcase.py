@@ -27,6 +27,7 @@ way. See README.md for the config additions (`video` block, per-slide
 import argparse
 import json
 import os
+import random
 
 import imageio.v2 as imageio
 import numpy as np
@@ -38,6 +39,7 @@ from build_carousel import (
     OVERLAP_STEP,
     TITLE_SUBTITLE_GAP,
     Theme,
+    _safe_composite,
     assign_rhythm,
     block_height,
     deck_frame_width,
@@ -50,6 +52,9 @@ from build_carousel import (
     split_columns,
 )
 from motion import (
+    MOTION_TEMPLATES,
+    apply_alpha,
+    apply_entrance_transform,
     build_phone_chrome,
     clamp,
     ease_out_cubic,
@@ -58,7 +63,6 @@ from motion import (
     natural_scroll_duration,
     plan_scroll_timing,
     render_scroll_frame,
-    rotate_in,
     rotated_bbox,
     scroll_offset_at,
 )
@@ -301,10 +305,10 @@ def render_screens_scene(slide, cfg, aspect, deck_shot_w, canvas_size, fps,
                 _scaled_alpha(np.array(text_layer), text_alpha), "RGBA")
             canvas.alpha_composite(layer)
 
-        scroll_t = tsec if skip_entrance else tsec - entrance_dur
+        scroll_t = tsec - entrance_dur
         for i, (ccx, ccy, rest_angle) in enumerate(positions):
             content = contents[i]
-            if skip_entrance or entrance_mode == "none":
+            if entrance_mode == "none":
                 entrance_p = 1.0
             else:
                 stagger = i * 0.06
@@ -316,22 +320,25 @@ def render_screens_scene(slide, cfg, aspect, deck_shot_w, canvas_size, fps,
                                                  content["status"], offset_y)
                 rw, rh = rot_dims[i]
                 shadow, pad, off = shadows[i]
-                canvas.alpha_composite(shadow, (int(ccx - rw / 2 - pad),
-                                                int(ccy - rh / 2 - pad + off)))
+                _safe_composite(canvas, shadow, ccx - rw / 2 - pad, ccy - rh / 2 - pad + off)
                 if abs(rest_angle) > 0.05:
-                    rotated, pos = rotate_in(chrome_img, (ccx, ccy), 1.0,
-                                             from_deg=rest_angle, to_deg=rest_angle)
-                    canvas.alpha_composite(rotated, pos)
+                    rotated, pos = apply_entrance_transform(chrome_img, (ccx, ccy), 1.0,
+                                                            entrance_mode, rest_angle, entrance_offset)
+                    _safe_composite(canvas, rotated, *pos)
                 else:
-                    canvas.alpha_composite(chrome_img, (int(ccx - fw / 2), int(ccy - fh / 2)))
+                    _safe_composite(canvas, chrome_img, ccx - fw / 2, ccy - fh / 2)
             elif entrance_p > 0:
+                # The transform still plays even when a crossfade is
+                # carrying this slide in (skip_entrance) -- only the extra
+                # alpha fade is skipped, since fading on top of the
+                # crossfade's own blend is what washes a transition out.
                 chrome_img = render_scroll_frame(chrome, content["content"], content["bg"],
                                                  content["status"], 0)
-                start_angle = (rest_angle - entrance_offset if rest_angle >= 0
-                              else rest_angle + entrance_offset)
-                rotated, pos = rotate_in(chrome_img, (ccx, ccy), entrance_p,
-                                         from_deg=start_angle, to_deg=rest_angle)
-                canvas.alpha_composite(rotated, pos)
+                transformed, pos = apply_entrance_transform(chrome_img, (ccx, ccy), entrance_p,
+                                                            entrance_mode, rest_angle, entrance_offset)
+                if not skip_entrance:
+                    transformed = apply_alpha(transformed, entrance_p / 0.6)
+                _safe_composite(canvas, transformed, *pos)
         frames.append(canvas.convert("RGB"))
     return frames
 
@@ -358,31 +365,63 @@ def _ken_burns_frame(image, canvas_size, zoom):
 
 def render_static_scene(slide, cfg, canvas_size, fps, entrance_dur, skip_entrance=False):
     kind = slide.get("type", "screens")
-    image = BUILDERS[kind](slide, cfg).convert("RGB")
+    image = BUILDERS[kind](slide, cfg).convert("RGBA")
     if image.size != canvas_size:
         image = image.resize(canvas_size, Image.LANCZOS)
 
     duration = clamp(float(slide.get("duration") or 3.0), 1.0, 10.0)
     n_frames = max(1, round(duration * fps))
     zoom_amount = float(slide.get("zoom", 0.06))
-    skip_fade = skip_entrance or str(slide.get("entrance", "fade-in")) == "none"
+    entrance_mode = str(slide.get("entrance", "fade-in"))
+    entrance_offset = ENTRANCE_OFFSETS.get(entrance_mode, 9.0)
 
     t = Theme(cfg, slide)
-    bg = Image.new("RGB", canvas_size, t.bg)
+    bg = Image.new("RGBA", canvas_size, t.bg + (255,))
+    center = (canvas_size[0] / 2, canvas_size[1] / 2)
     frames = []
     for f in range(n_frames):
         tsec = f / fps
         zoom = 1.0 + zoom_amount * ease_out_cubic(clamp(tsec / duration))
         frame_img = _ken_burns_frame(image, canvas_size, zoom) if zoom_amount > 0 else image
-        if skip_fade:
-            frames.append(frame_img)
+
+        entrance_p = 1.0 if entrance_mode == "none" else clamp(tsec / max(entrance_dur, 1e-6))
+        if entrance_p >= 1.0:
+            frames.append(frame_img.convert("RGB"))
             continue
-        alpha = clamp(tsec / max(entrance_dur, 1e-6), 0, 1)
-        frames.append(frame_img if alpha >= 1 else Image.blend(bg, frame_img, ease_out_cubic(alpha)))
+
+        transformed, pos = apply_entrance_transform(frame_img, center, entrance_p, entrance_mode,
+                                                    entrance_offset=entrance_offset)
+        if not skip_entrance:
+            transformed = apply_alpha(transformed, entrance_p / 0.6)
+        canvas = bg.copy()
+        _safe_composite(canvas, transformed, *pos)
+        frames.append(canvas.convert("RGB"))
     return frames
 
 
 # -------------------------------------------------------------- assembly
+
+def assign_motion_templates(slides, vcfg):
+    """Give each slide that doesn't already pin its own "entrance" a
+    randomly-chosen motion template, shuffled fresh (or seeded via
+    video.motion_seed) each run -- "first slide rotates in, second
+    flips, ..." with the mix changing between runs rather than every
+    deck looking identical. Cycles through a shuffled copy of the pool
+    so a deck longer than the pool still avoids immediate repeats."""
+    pool = list(vcfg.get("motion_templates") or MOTION_TEMPLATES)
+    if not pool:
+        return {}
+    seed = vcfg.get("motion_seed")
+    rng = random.Random(seed)
+    order = rng.sample(pool, len(pool))
+    templates, n = {}, 0
+    for i, slide in enumerate(slides):
+        if "entrance" in slide:
+            continue  # explicit per-slide choice always wins
+        templates[i] = order[n % len(order)]
+        n += 1
+    return templates
+
 
 def build_video(cfg, out_path=None):
     vcfg = {**VIDEO_DEFAULTS, **cfg.get("video", {})}
@@ -395,6 +434,7 @@ def build_video(cfg, out_path=None):
     slides = cfg.get("slides", [])
     if not slides:
         raise ValueError("Config has no slides.")
+    motion_templates = assign_motion_templates(slides, vcfg)
 
     t0 = Theme(cfg)
     canvas_size = (t0.W, t0.H)
@@ -402,10 +442,13 @@ def build_video(cfg, out_path=None):
 
     per_slide_frames = []
     for i, slide in enumerate(slides):
-        # A slide crossfading in from a predecessor doesn't need its own
-        # entrance animation too -- that just washes out the dissolve (see
-        # README/commit notes). Only the deck's very first slide, or any
-        # slide when transitions are off, plays its full entrance.
+        if i in motion_templates:
+            slide = {**slide, "entrance": motion_templates[i]}
+        # A slide crossfading in from a predecessor plays its motion
+        # template at full opacity instead of also fading in -- fading on
+        # top of the crossfade's own blend is what washes a transition
+        # out (see README/commit notes). Only the deck's very first
+        # slide, or any slide when transitions are off, also fades.
         skip_entrance = i > 0 and vcfg["transition"] != "cut"
         kind = slide.get("type", "screens")
         frames = None

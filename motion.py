@@ -190,23 +190,91 @@ def make_shadow(w, h, radius=56, blur=26, alpha=65):
     return shadow, pad, offset
 
 
+def apply_alpha(image, alpha):
+    """Scale an RGBA image's alpha channel by `alpha` (0..1). Kept separate
+    from the motion templates below so a slide crossfading in from a
+    predecessor can play the same transform at full opacity -- fading the
+    transform's own alpha *on top of* the crossfade's blend is what washes
+    a transition out toward flat background."""
+    if alpha >= 1.0:
+        return image
+    arr = np.array(image)
+    arr[..., 3] = (arr[..., 3].astype(np.float32) * clamp(alpha)).astype(np.uint8)
+    return Image.fromarray(arr, "RGBA")
+
+
+# ------------------------------------------------------- entrance templates
+#
+# Each takes (image, center, progress) [+ template-specific args] and
+# returns (transformed_image, top_left_paste_pos), with NO alpha change --
+# see apply_alpha() above for why that's applied separately by the caller.
+
 def rotate_in(image, center, progress, from_deg=-9.0, to_deg=0.0, ease=ease_out_cubic):
-    """Rotate `image` from `from_deg` to `to_deg` and fade it in, recentring
-    the rotated bounding box on `center` (cx, cy) each step. `progress` is
-    0..1 (0 = start of entrance, 1 = fully settled). Passing
-    from_deg == to_deg (progress=1) is the normal way to render a frame
-    that rests at a fixed non-zero tilt (overlap/tilt layouts)."""
+    """Rotate `image` from `from_deg` to `to_deg`, recentring the rotated
+    bounding box on `center` (cx, cy) each step. `progress` is 0..1 (0 =
+    start of entrance, 1 = fully settled). Passing from_deg == to_deg
+    (progress=1) is the normal way to render a frame that rests at a
+    fixed non-zero tilt (overlap/tilt layouts)."""
     p = ease(clamp(progress))
     angle = from_deg + (to_deg - from_deg) * p
-    alpha = clamp(progress / 0.6)          # fade finishes a bit before settle
-
     rotated = image if abs(angle) < 0.05 else image.rotate(
         angle, resample=Image.BICUBIC, expand=True)
-    if alpha < 1.0:
-        arr = np.array(rotated)
-        arr[..., 3] = (arr[..., 3].astype(np.float32) * alpha).astype(np.uint8)
-        rotated = Image.fromarray(arr, "RGBA")
-
     cx, cy = center
     pos = (int(cx - rotated.width / 2), int(cy - rotated.height / 2))
     return rotated, pos
+
+
+def slide_in(image, center, progress, from_offset=None, ease=ease_out_cubic):
+    """Translate `image` up into `center` from `from_offset` px below (no
+    rotation, no scale)."""
+    p = ease(clamp(progress))
+    dy = image.height * 0.35 if from_offset is None else from_offset
+    cx, cy = center
+    y = cy + dy * (1 - p)
+    return image, (int(cx - image.width / 2), int(y - image.height / 2))
+
+
+def zoom_in(image, center, progress, from_scale=0.55, ease=ease_out_cubic):
+    """Scale `image` up from `from_scale`x to full size, centred on `center`."""
+    p = ease(clamp(progress))
+    scale = from_scale + (1 - from_scale) * p
+    w, h = max(1, round(image.width * scale)), max(1, round(image.height * scale))
+    resized = image.resize((w, h), Image.LANCZOS) if (w, h) != image.size else image
+    cx, cy = center
+    return resized, (int(cx - w / 2), int(cy - h / 2))
+
+
+def flip_in(image, center, progress, ease=ease_out_cubic):
+    """Simulate a card flip around the vertical axis: squash width from
+    near-zero to full while height stays fixed, as if swinging open."""
+    p = ease(clamp(progress))
+    factor = max(0.04, p)
+    w = max(1, round(image.width * factor))
+    resized = image.resize((w, image.height), Image.LANCZOS)
+    cx, cy = center
+    return resized, (int(cx - w / 2), int(cy - image.height / 2))
+
+
+MOTION_TEMPLATES = ("rotate-in", "flip", "slide-in", "zoom-in")
+
+
+def apply_entrance_transform(image, center, progress, template, rest_angle=0.0,
+                             entrance_offset=9.0):
+    """Dispatch to the named motion template. A frame with a permanent
+    resting tilt (overlap/tilt layouts) always settles via rotation
+    regardless of the chosen template -- flip/slide/zoom don't compose
+    meaningfully with "and also tilted forever", so the tilt itself IS
+    that frame's motion."""
+    if template == "none":
+        cx, cy = center
+        return image, (int(cx - image.width / 2), int(cy - image.height / 2))
+    if abs(rest_angle) > 0.05:
+        start = rest_angle - entrance_offset if rest_angle >= 0 else rest_angle + entrance_offset
+        return rotate_in(image, center, progress, from_deg=start, to_deg=rest_angle)
+    if template == "flip":
+        return flip_in(image, center, progress)
+    if template == "slide-in":
+        return slide_in(image, center, progress)
+    if template == "zoom-in":
+        return zoom_in(image, center, progress)
+    return rotate_in(image, center, progress, from_deg=-entrance_offset, to_deg=0.0)
