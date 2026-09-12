@@ -43,7 +43,7 @@ Uses the same config as the PDF carousel, plus an optional `video` block and a f
 }
 ```
 
-`screens` slides using the `row` or `split` layout get the full treatment: the phone frame rotates/fades in, then if the screenshot is taller than the device viewport it auto-scrolls top to bottom like a real screen recording (holds if it already fits). Every other slide type or layout renders once via its existing PDF slide builder and holds for its `duration` (default 3s), fading in and crossfading into the next slide. Output canvas is the deck's `width`/`height` (default 1080x1350, a 4:5 ratio suited to LinkedIn's in-feed video player).
+`screens` slides using the `row` or `split` layout get the full treatment: the phone frame rotates/fades in (`"entrance": "rotate-in"` default, or `"fade-in"`/`"none"`), then if the screenshot is taller than the device viewport it auto-scrolls top to bottom like a real screen recording (holds if it already fits; set `"scroll": false` to force a static hold instead). Every other slide type or layout renders once via its existing PDF slide builder and holds for its `duration` (default 3s), fading in and crossfading into the next slide. A slide arriving via crossfade skips its own entrance animation (the dissolve already carries it in); only the deck's first slide always plays its entrance. Output canvas is the deck's `width`/`height` (default 1080x1350, a 4:5 ratio suited to LinkedIn's in-feed video player).
 
 Paths inside the config (screenshots, icon files) are resolved relative to the config file's own directory, not the current working directory.
 

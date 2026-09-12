@@ -159,33 +159,41 @@ def _screens_layout(slide, cfg, canvas_size, chrome):
     return text_layer, positions
 
 
-def _prep_contents(specs, chrome, shot_w):
+ENTRANCE_ANGLES = {"rotate-in": -9.0, "fade-in": 0.0}
+
+
+def _prep_contents(specs, chrome, shot_w, allow_scroll):
     contents = []
     for s in specs:
         src = prepare_screen(s["path"], s.get("crop"), s.get("status_bar"))
         h = int(src.height * shot_w / src.width)
         content_full = src.resize((shot_w, max(1, h)), Image.LANCZOS)
         bg = content_full.getpixel((3, 3))
+        scroll_range = max(0, content_full.height - chrome["viewport_h"]) if allow_scroll else 0
         contents.append({
             "content": content_full,
             "bg": bg,
             "status": freeze_status_bar(chrome, bg),
-            "range": max(0, content_full.height - chrome["viewport_h"]),
+            "range": scroll_range,
         })
     return contents
 
 
 def render_screens_scene(slide, cfg, aspect, deck_shot_w, canvas_size, fps,
-                         entrance_dur, default_duration):
+                         entrance_dur, skip_entrance=False):
     specs = normalize_screenshots(slide)
     layout = str(slide.get("layout", Theme(cfg, slide).layout))
     if not specs or layout not in ("row", "split"):
         return None  # caller falls back to a static render
 
+    entrance_mode = str(slide.get("entrance", "rotate-in"))
+    allow_scroll = slide.get("scroll", "auto") not in (False, "none", "off")
+    entrance_angle = ENTRANCE_ANGLES.get(entrance_mode, -9.0)
+
     shot_w = _shot_width(slide, cfg, aspect, deck_shot_w)
     chrome = build_phone_chrome(shot_w, aspect)
     fw, fh = chrome["size"]
-    contents = _prep_contents(specs, chrome, shot_w)
+    contents = _prep_contents(specs, chrome, shot_w, allow_scroll)
     text_layer, positions = _screens_layout(slide, cfg, canvas_size, chrome)
 
     max_range = max((c["range"] for c in contents), default=0)
@@ -206,28 +214,33 @@ def render_screens_scene(slide, cfg, aspect, deck_shot_w, canvas_size, fps,
         tsec = f / fps
         canvas = bg_layer.copy()
 
-        text_alpha = clamp(tsec / max(entrance_dur, 1e-6))
+        text_alpha = 1.0 if skip_entrance else clamp(tsec / max(entrance_dur, 1e-6))
         if text_alpha > 0:
             layer = text_layer if text_alpha >= 1 else Image.fromarray(
                 _scaled_alpha(np.array(text_layer), text_alpha), "RGBA")
             canvas.alpha_composite(layer)
 
+        scroll_t = tsec if skip_entrance else tsec - entrance_dur
         for i, (x, y) in enumerate(positions):
-            stagger = i * 0.06
-            entrance_p = clamp((tsec - stagger) / max(entrance_dur - stagger, 1e-6))
             content = contents[i]
+            if skip_entrance or entrance_mode == "none":
+                entrance_p = 1.0
+            else:
+                stagger = i * 0.06
+                entrance_p = clamp((tsec - stagger) / max(entrance_dur - stagger, 1e-6))
 
             if entrance_p >= 1.0:
                 shadow, pad, off = shadows[i]
                 canvas.alpha_composite(shadow, (x - pad, y - pad + off))
-                offset_y = scroll_offset_at(tsec - entrance_dur, hold, scroll_time, content["range"])
+                offset_y = scroll_offset_at(scroll_t, hold, scroll_time, content["range"])
                 chrome_img = render_scroll_frame(chrome, content["content"], content["bg"],
                                                  content["status"], offset_y)
                 canvas.alpha_composite(chrome_img, (x, y))
             elif entrance_p > 0:
                 chrome_img = render_scroll_frame(chrome, content["content"], content["bg"],
                                                  content["status"], 0)
-                rotated, pos = rotate_in(chrome_img, (x + fw / 2, y + fh / 2), entrance_p)
+                rotated, pos = rotate_in(chrome_img, (x + fw / 2, y + fh / 2), entrance_p,
+                                         from_deg=entrance_angle)
                 canvas.alpha_composite(rotated, pos)
         frames.append(canvas.convert("RGB"))
     return frames
@@ -241,16 +254,19 @@ def _scaled_alpha(arr, factor):
 
 # ---------------------------------------------------- scene: static fallback
 
-def render_static_scene(slide, cfg, canvas_size, fps, entrance_dur):
+def render_static_scene(slide, cfg, canvas_size, fps, entrance_dur, skip_entrance=False):
     kind = slide.get("type", "screens")
     image = BUILDERS[kind](slide, cfg).convert("RGB")
     if image.size != canvas_size:
         image = image.resize(canvas_size, Image.LANCZOS)
 
-    t = Theme(cfg, slide)
-    bg = Image.new("RGB", canvas_size, t.bg)
     duration = clamp(float(slide.get("duration") or 3.0), 1.0, 10.0)
     n_frames = max(1, round(duration * fps))
+    if skip_entrance or str(slide.get("entrance", "fade-in")) == "none":
+        return [image] * n_frames
+
+    t = Theme(cfg, slide)
+    bg = Image.new("RGB", canvas_size, t.bg)
     frames = []
     for f in range(n_frames):
         tsec = f / fps
@@ -280,14 +296,20 @@ def build_video(cfg, out_path=None):
     deck_shot_w = deck_frame_width(cfg, aspect)
 
     per_slide_frames = []
-    for slide in slides:
+    for i, slide in enumerate(slides):
+        # A slide crossfading in from a predecessor doesn't need its own
+        # entrance animation too -- that just washes out the dissolve (see
+        # README/commit notes). Only the deck's very first slide, or any
+        # slide when transitions are off, plays its full entrance.
+        skip_entrance = i > 0 and vcfg["transition"] != "cut"
         kind = slide.get("type", "screens")
         frames = None
         if kind == "screens":
             frames = render_screens_scene(slide, cfg, aspect, deck_shot_w, canvas_size,
-                                          fps, entrance_dur, 3.0)
+                                          fps, entrance_dur, skip_entrance)
         if frames is None:
-            frames = render_static_scene(slide, cfg, canvas_size, fps, entrance_dur)
+            frames = render_static_scene(slide, cfg, canvas_size, fps, entrance_dur,
+                                         skip_entrance)
         per_slide_frames.append(frames)
 
     all_frames = []
@@ -334,7 +356,7 @@ def dump_filmstrip(cfg, out_path, n=12):
                  if s.get("type", "screens") == "screens"
                  and str(s.get("layout", "row")) in ("row", "split")), cfg["slides"][0])
     frames = render_screens_scene(slide, cfg, aspect, deck_shot_w, canvas_size, fps,
-                                  entrance_dur, 3.0) or render_static_scene(
+                                  entrance_dur) or render_static_scene(
         slide, cfg, canvas_size, fps, entrance_dur)
 
     idx = np.linspace(0, len(frames) - 1, n).astype(int)
