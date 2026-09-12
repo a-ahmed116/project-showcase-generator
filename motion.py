@@ -7,6 +7,8 @@ frozen status bar) is built once by `build_phone_chrome` /
 piece -- a crop of the full-height screenshot -- into it.
 """
 
+import math
+
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -139,11 +141,40 @@ def scroll_offset_at(t, hold, scroll_time, scroll_range):
     return scroll_range
 
 
-def scroll_timing(avail_seconds, hold_frac=0.18, min_hold=0.25, min_scroll=0.6):
-    """Split the time available for the hold/scroll/hold phase of a slide."""
-    hold = max(min_hold, avail_seconds * hold_frac)
-    scroll_time = max(min_scroll, avail_seconds - 2 * hold)
-    return hold, scroll_time
+def plan_scroll_timing(max_range, avail_seconds, speed=550.0, hold=0.4):
+    """Split `avail_seconds` into hold/scroll/hold given a target scroll
+    `speed` (px/sec, for the longest screenshot in the slide) and a base
+    `hold` pause at top and bottom. If the natural hold+scroll+hold doesn't
+    fit `avail_seconds`, both are scaled down proportionally; if there's
+    time to spare, it's added to the holds rather than slowing the scroll
+    further than requested."""
+    if max_range <= 0:
+        return hold, max(0.0, avail_seconds - 2 * hold)
+    natural_scroll = clamp(max_range / max(1.0, speed), 0.6, 6.0)
+    needed = 2 * hold + natural_scroll
+    if needed <= avail_seconds:
+        extra = avail_seconds - needed
+        return hold + extra / 2, natural_scroll
+    factor = avail_seconds / max(1e-6, needed)
+    return hold * factor, natural_scroll * factor
+
+
+def natural_scroll_duration(max_range, speed=550.0):
+    """Scroll time a slide would need on its own, before fitting any
+    explicit slide `duration` -- used to size an auto duration."""
+    if max_range <= 0:
+        return 0.0
+    return clamp(max_range / max(1.0, speed), 0.6, 6.0)
+
+
+def rotated_bbox(w, h, degrees):
+    """Size of the bounding box after rotating a w x h rect by `degrees`,
+    matching PIL's rotate(expand=True) -- used to lay out permanently
+    tilted frames (overlap/tilt layouts) without actually rotating an
+    image just to measure it."""
+    rad = math.radians(abs(degrees))
+    c, s = abs(math.cos(rad)), abs(math.sin(rad))
+    return w * c + h * s, w * s + h * c
 
 
 def make_shadow(w, h, radius=56, blur=26, alpha=65):
@@ -159,12 +190,14 @@ def make_shadow(w, h, radius=56, blur=26, alpha=65):
     return shadow, pad, offset
 
 
-def rotate_in(image, center, progress, from_deg=-9.0, ease=ease_out_cubic):
-    """Rotate `image` from `from_deg` to 0 and fade it in, recentring the
-    rotated bounding box on `center` (cx, cy) each step. `progress` is
-    0..1 (0 = start of entrance, 1 = fully settled)."""
+def rotate_in(image, center, progress, from_deg=-9.0, to_deg=0.0, ease=ease_out_cubic):
+    """Rotate `image` from `from_deg` to `to_deg` and fade it in, recentring
+    the rotated bounding box on `center` (cx, cy) each step. `progress` is
+    0..1 (0 = start of entrance, 1 = fully settled). Passing
+    from_deg == to_deg (progress=1) is the normal way to render a frame
+    that rests at a fixed non-zero tilt (overlap/tilt layouts)."""
     p = ease(clamp(progress))
-    angle = from_deg * (1 - p)
+    angle = from_deg + (to_deg - from_deg) * p
     alpha = clamp(progress / 0.6)          # fade finishes a bit before settle
 
     rotated = image if abs(angle) < 0.05 else image.rotate(

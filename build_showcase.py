@@ -14,11 +14,14 @@ Usage
     python build_showcase.py config.json --out demo.mp4 --fps 30
     python build_showcase.py config.json --filmstrip strip.png   # debug: dump sampled frames
 
-Only "screens" slides with a "row" or "split" layout get the full
-rotate-in + scroll treatment; every other slide type/layout renders once
-via its existing PDF slide builder and holds for its duration, still
-crossfading in and out. See README.md for the config additions
-(`video` block, per-slide `duration`/`entrance`/`scroll`).
+Every "screens" layout (row/split/grid/overlap/stagger/tilt/bleed) gets
+the rotate-in + scroll treatment, settling into whatever static
+arrangement build_carousel.slide_screens() would draw for that layout
+(including overlap/tilt's permanent per-frame tilt). Every other slide
+type renders once via its existing PDF slide builder, with a slow Ken
+Burns zoom, and holds for its duration -- crossfading in and out either
+way. See README.md for the config additions (`video` block, per-slide
+`duration`/`entrance`/`scroll`/`scroll_speed`/`scroll_hold`/`zoom`).
 """
 
 import argparse
@@ -35,6 +38,7 @@ from build_carousel import (
     OVERLAP_STEP,
     TITLE_SUBTITLE_GAP,
     Theme,
+    assign_rhythm,
     block_height,
     deck_frame_width,
     draw_aligned_block,
@@ -51,10 +55,12 @@ from motion import (
     ease_out_cubic,
     freeze_status_bar,
     make_shadow,
+    natural_scroll_duration,
+    plan_scroll_timing,
     render_scroll_frame,
     rotate_in,
+    rotated_bbox,
     scroll_offset_at,
-    scroll_timing,
 )
 
 DEVICE_ASPECT_FALLBACK = 2.1667   # same fallback as build_carousel.deck_aspect
@@ -123,8 +129,12 @@ def _split_text_layer(canvas_size, cfg, slide, text_l, text_r, fh):
 # --------------------------------------------------------- scene: screens
 
 def _screens_layout(slide, cfg, canvas_size, chrome):
-    """Positions (top-left of each chrome) plus the static text layer, for
-    row or split layout -- mirrors slide_screens()'s own math exactly."""
+    """(center_x, center_y, resting_angle) for each chrome, plus the static
+    text layer -- mirrors slide_screens()'s own per-layout math exactly.
+    A frame's rotated bounding box has the same centre as the unrotated
+    one (PIL's rotate(expand=True) rotates about the centre), which is
+    what lets overlap/tilt's permanently-tilted frames reuse the same
+    "place by centre" compositing as every other layout."""
     t = Theme(cfg, slide)
     layout = str(slide.get("layout", t.layout))
     fw, fh = chrome["size"]
@@ -146,20 +156,85 @@ def _screens_layout(slide, cfg, canvas_size, chrome):
         total_w = fw + step * (n - 1)
         x = fx0 + max(0, (frame_w - total_w) // 2)
         top = max(t.top_margin, (t.H - fh) // 2)
-        positions = [(x + i * step, top) for i in range(n)]
+        positions = [(x + i * step + fw / 2, top + fh / 2, 0.0) for i in range(n)]
         return text_layer, positions
 
-    # row (default)
     text_layer, text_bottom = _text_layer(canvas_size, cfg, slide)
     avail_h = t.H - text_bottom - t.bottom_margin
+
+    if layout == "bleed":
+        top = text_bottom + int(t.H * 0.015)
+        shift = int(float(slide.get("offset_x", 0)) * fw)
+        total_w = n * fw + (n - 1) * t.gap
+        x = cx - total_w // 2 + shift
+        positions = []
+        for _ in range(n):
+            positions.append((x + fw / 2, top + fh / 2, 0.0))
+            x += fw + t.gap
+        return text_layer, positions
+
+    if layout == "grid" and n > 1:
+        rows = 2
+        cols = -(-n // rows)
+        block_h = rows * fh + (rows - 1) * t.gap
+        top0 = text_bottom + max(0, (avail_h - block_h) // 2)
+        positions = []
+        for i in range(n):
+            r, c = divmod(i, cols)
+            in_row = min(cols, n - r * cols)
+            row_w = in_row * fw + (in_row - 1) * t.gap
+            x = cx - row_w // 2 + c * (fw + t.gap)
+            y = top0 + r * (fh + t.gap)
+            positions.append((x + fw / 2, y + fh / 2, 0.0))
+        return text_layer, positions
+
+    if layout == "overlap" and n > 1:
+        tilt = float(slide.get("tilt", 4))
+        angles = [-((i - (n - 1) / 2) * tilt) for i in range(n)]
+        tall = max(rotated_bbox(fw, fh, a)[1] for a in angles)
+        top0 = text_bottom + max(0, (avail_h - tall) // 2)
+        step = int(fw * OVERLAP_STEP)
+        total_w = fw + step * (n - 1)
+        x0 = cx - total_w // 2
+        positions = [(x0 + i * step + fw / 2, top0 + tall / 2, angles[i]) for i in range(n)]
+        return text_layer, positions
+
+    if layout == "tilt":
+        ang = float(slide.get("tilt", 6))
+        angles = [-ang if i % 2 == 0 else ang for i in range(n)]
+        widths = [rotated_bbox(fw, fh, a)[0] for a in angles]
+        tall = max((rotated_bbox(fw, fh, a)[1] for a in angles), default=fh)
+        top0 = text_bottom + max(0, (avail_h - tall) // 2)
+        total_w = sum(widths) + t.gap * (n - 1)
+        x = cx - total_w // 2
+        positions = []
+        for i in range(n):
+            positions.append((x + widths[i] / 2, top0 + tall / 2, angles[i]))
+            x += widths[i] + t.gap
+        return text_layer, positions
+
+    if layout == "stagger" and n > 1:
+        drop = int(slide.get("stagger", t.H * 0.045))
+        total_w = n * fw + (n - 1) * t.gap
+        top0 = text_bottom + max(0, (avail_h - fh - drop) // 2)
+        x = cx - total_w // 2
+        positions = []
+        for i in range(n):
+            y = top0 + (drop if i % 2 else 0)
+            positions.append((x + fw / 2, y + fh / 2, 0.0))
+            x += fw + t.gap
+        return text_layer, positions
+
+    # row (default, and the fallback slide_screens() itself uses when
+    # grid/overlap/stagger are requested with only one screenshot)
     total_w = n * fw + (n - 1) * t.gap
     top = text_bottom + max(0, (avail_h - fh) // 2)
     x0 = cx - total_w // 2
-    positions = [(x0 + i * (fw + t.gap), top) for i in range(n)]
+    positions = [(x0 + i * (fw + t.gap) + fw / 2, top + fh / 2, 0.0) for i in range(n)]
     return text_layer, positions
 
 
-ENTRANCE_ANGLES = {"rotate-in": -9.0, "fade-in": 0.0}
+ENTRANCE_OFFSETS = {"rotate-in": 9.0, "fade-in": 0.0}
 
 
 def _prep_contents(specs, chrome, shot_w, allow_scroll):
@@ -182,13 +257,14 @@ def _prep_contents(specs, chrome, shot_w, allow_scroll):
 def render_screens_scene(slide, cfg, aspect, deck_shot_w, canvas_size, fps,
                          entrance_dur, skip_entrance=False):
     specs = normalize_screenshots(slide)
-    layout = str(slide.get("layout", Theme(cfg, slide).layout))
-    if not specs or layout not in ("row", "split"):
+    if not specs:
         return None  # caller falls back to a static render
 
     entrance_mode = str(slide.get("entrance", "rotate-in"))
     allow_scroll = slide.get("scroll", "auto") not in (False, "none", "off")
-    entrance_angle = ENTRANCE_ANGLES.get(entrance_mode, -9.0)
+    entrance_offset = ENTRANCE_OFFSETS.get(entrance_mode, 9.0)
+    scroll_speed = float(slide.get("scroll_speed", 550.0))
+    scroll_hold = float(slide.get("scroll_hold", 0.4))
 
     shot_w = _shot_width(slide, cfg, aspect, deck_shot_w)
     chrome = build_phone_chrome(shot_w, aspect)
@@ -198,15 +274,20 @@ def render_screens_scene(slide, cfg, aspect, deck_shot_w, canvas_size, fps,
 
     max_range = max((c["range"] for c in contents), default=0)
     duration = float(slide.get("duration") or (
-        entrance_dur + 2 * 0.4 + max(0.8, max_range / 550.0) if max_range > 0
-        else entrance_dur + 1.6))
+        entrance_dur + 2 * scroll_hold + natural_scroll_duration(max_range, scroll_speed)
+        if max_range > 0 else entrance_dur + 1.6))
     duration = clamp(duration, entrance_dur + 0.8, 10.0)
     avail = max(0.4, duration - entrance_dur)
-    hold, scroll_time = scroll_timing(avail)
+    hold, scroll_time = plan_scroll_timing(max_range, avail, scroll_speed, scroll_hold)
 
     t = Theme(cfg, slide)
     bg_layer = Image.new("RGBA", canvas_size, t.bg + (255,))
-    shadows = [make_shadow(fw, fh) for _ in positions]
+    # Rotated bounding boxes (and their shadows) are constant per slide even
+    # though the scrolling content inside them isn't, so both are
+    # precomputed once here rather than every frame.
+    rot_dims = [rotated_bbox(fw, fh, a) if abs(a) > 0.05 else (fw, fh)
+               for _, _, a in positions]
+    shadows = [make_shadow(round(rw), round(rh)) for rw, rh in rot_dims]
 
     n_frames = max(1, round(duration * fps))
     frames = []
@@ -221,7 +302,7 @@ def render_screens_scene(slide, cfg, aspect, deck_shot_w, canvas_size, fps,
             canvas.alpha_composite(layer)
 
         scroll_t = tsec if skip_entrance else tsec - entrance_dur
-        for i, (x, y) in enumerate(positions):
+        for i, (ccx, ccy, rest_angle) in enumerate(positions):
             content = contents[i]
             if skip_entrance or entrance_mode == "none":
                 entrance_p = 1.0
@@ -230,17 +311,26 @@ def render_screens_scene(slide, cfg, aspect, deck_shot_w, canvas_size, fps,
                 entrance_p = clamp((tsec - stagger) / max(entrance_dur - stagger, 1e-6))
 
             if entrance_p >= 1.0:
-                shadow, pad, off = shadows[i]
-                canvas.alpha_composite(shadow, (x - pad, y - pad + off))
                 offset_y = scroll_offset_at(scroll_t, hold, scroll_time, content["range"])
                 chrome_img = render_scroll_frame(chrome, content["content"], content["bg"],
                                                  content["status"], offset_y)
-                canvas.alpha_composite(chrome_img, (x, y))
+                rw, rh = rot_dims[i]
+                shadow, pad, off = shadows[i]
+                canvas.alpha_composite(shadow, (int(ccx - rw / 2 - pad),
+                                                int(ccy - rh / 2 - pad + off)))
+                if abs(rest_angle) > 0.05:
+                    rotated, pos = rotate_in(chrome_img, (ccx, ccy), 1.0,
+                                             from_deg=rest_angle, to_deg=rest_angle)
+                    canvas.alpha_composite(rotated, pos)
+                else:
+                    canvas.alpha_composite(chrome_img, (int(ccx - fw / 2), int(ccy - fh / 2)))
             elif entrance_p > 0:
                 chrome_img = render_scroll_frame(chrome, content["content"], content["bg"],
                                                  content["status"], 0)
-                rotated, pos = rotate_in(chrome_img, (x + fw / 2, y + fh / 2), entrance_p,
-                                         from_deg=entrance_angle)
+                start_angle = (rest_angle - entrance_offset if rest_angle >= 0
+                              else rest_angle + entrance_offset)
+                rotated, pos = rotate_in(chrome_img, (ccx, ccy), entrance_p,
+                                         from_deg=start_angle, to_deg=rest_angle)
                 canvas.alpha_composite(rotated, pos)
         frames.append(canvas.convert("RGB"))
     return frames
@@ -254,6 +344,18 @@ def _scaled_alpha(arr, factor):
 
 # ---------------------------------------------------- scene: static fallback
 
+def _ken_burns_frame(image, canvas_size, zoom):
+    """Slow zoom-in: render `image` at `zoom`x, crop back to canvas_size
+    around the centre. zoom <= 1 returns image unchanged."""
+    if zoom <= 1.0001:
+        return image
+    w, h = canvas_size
+    zw, zh = max(w, round(w * zoom)), max(h, round(h * zoom))
+    resized = image.resize((zw, zh), Image.LANCZOS)
+    x0, y0 = (zw - w) // 2, (zh - h) // 2
+    return resized.crop((x0, y0, x0 + w, y0 + h))
+
+
 def render_static_scene(slide, cfg, canvas_size, fps, entrance_dur, skip_entrance=False):
     kind = slide.get("type", "screens")
     image = BUILDERS[kind](slide, cfg).convert("RGB")
@@ -262,19 +364,21 @@ def render_static_scene(slide, cfg, canvas_size, fps, entrance_dur, skip_entranc
 
     duration = clamp(float(slide.get("duration") or 3.0), 1.0, 10.0)
     n_frames = max(1, round(duration * fps))
-    if skip_entrance or str(slide.get("entrance", "fade-in")) == "none":
-        return [image] * n_frames
+    zoom_amount = float(slide.get("zoom", 0.06))
+    skip_fade = skip_entrance or str(slide.get("entrance", "fade-in")) == "none"
 
     t = Theme(cfg, slide)
     bg = Image.new("RGB", canvas_size, t.bg)
     frames = []
     for f in range(n_frames):
         tsec = f / fps
+        zoom = 1.0 + zoom_amount * ease_out_cubic(clamp(tsec / duration))
+        frame_img = _ken_burns_frame(image, canvas_size, zoom) if zoom_amount > 0 else image
+        if skip_fade:
+            frames.append(frame_img)
+            continue
         alpha = clamp(tsec / max(entrance_dur, 1e-6), 0, 1)
-        if alpha >= 1:
-            frames.append(image)
-        else:
-            frames.append(Image.blend(bg, image, ease_out_cubic(alpha)))
+        frames.append(frame_img if alpha >= 1 else Image.blend(bg, frame_img, ease_out_cubic(alpha)))
     return frames
 
 
@@ -287,6 +391,7 @@ def build_video(cfg, out_path=None):
     transition_frames = max(1, round(float(vcfg["transition_duration"]) * fps))
     aspect = float(cfg.get("device_aspect", DEVICE_ASPECT_FALLBACK))
 
+    cfg = assign_rhythm(cfg)          # same "rhythm": true handling as the PDF builder
     slides = cfg.get("slides", [])
     if not slides:
         raise ValueError("Config has no slides.")
@@ -341,20 +446,23 @@ def build_video(cfg, out_path=None):
     return out, len(all_frames)
 
 
-def dump_filmstrip(cfg, out_path, n=12):
+def dump_filmstrip(cfg, out_path, n=12, slide_index=None):
     """Debug aid: render one representative slide across n sampled frames
     and tile them into a single contact-sheet PNG."""
     vcfg = {**VIDEO_DEFAULTS, **cfg.get("video", {})}
     fps = int(vcfg["fps"])
     entrance_dur = float(vcfg["entrance_duration"])
     aspect = float(cfg.get("device_aspect", DEVICE_ASPECT_FALLBACK))
+    cfg = assign_rhythm(cfg)
     t0 = Theme(cfg)
     canvas_size = (t0.W, t0.H)
     deck_shot_w = deck_frame_width(cfg, aspect)
 
-    slide = next((s for s in cfg.get("slides", [])
-                 if s.get("type", "screens") == "screens"
-                 and str(s.get("layout", "row")) in ("row", "split")), cfg["slides"][0])
+    slides = cfg["slides"]
+    if slide_index is not None:
+        slide = slides[slide_index]
+    else:
+        slide = next((s for s in slides if s.get("type", "screens") == "screens"), slides[0])
     frames = render_screens_scene(slide, cfg, aspect, deck_shot_w, canvas_size, fps,
                                   entrance_dur) or render_static_scene(
         slide, cfg, canvas_size, fps, entrance_dur)
@@ -379,6 +487,8 @@ def main():
     ap.add_argument("--fps", type=int, help="override frames per second")
     ap.add_argument("--filmstrip", metavar="PNG",
                     help="debug: render sampled frames of one scene into a contact sheet, no video encode")
+    ap.add_argument("--filmstrip-slide", type=int, metavar="N",
+                    help="debug: which slide index to use with --filmstrip (default: first screens slide)")
     args = ap.parse_args()
 
     with open(args.config, encoding="utf-8") as fh:
@@ -391,7 +501,8 @@ def main():
     os.chdir(base)
     try:
         if args.filmstrip:
-            out, n = dump_filmstrip(cfg, os.path.join(cwd, args.filmstrip))
+            out, n = dump_filmstrip(cfg, os.path.join(cwd, args.filmstrip),
+                                    slide_index=args.filmstrip_slide)
             print("wrote %s (sampled from %d frames)" % (out, n))
         else:
             out, n = build_video(cfg, args.out and os.path.join(cwd, args.out))
